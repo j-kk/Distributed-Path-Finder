@@ -21,6 +21,7 @@ def plot_points(pointsCollection, color):
 vert_filename = sys.argv[1]
 edge_filename = sys.argv[2]
 max_accumulation = int(sys.argv[3])
+save_filename = sys.argv[4]
 
 with open(vert_filename) as vert_filestream, open(edge_filename) as edge_filestream:
     parser = GraphParser()
@@ -39,8 +40,16 @@ with open(vert_filename) as vert_filestream, open(edge_filename) as edge_filestr
     regionVerts = [r.items for r in regions]
     regions2 = consolidate_regions(regionVerts)
 
-    for i in range(len(regions2)):
-        region = regions2[i]
+    region_no = 0
+    with open(save_filename, "x") as save_filestream:
+        for region in regions2:
+            save_filestream.write(str(region_no) + "\n")
+            for vert in region:
+                save_filestream.write(str(vert.id) + " ")
+            save_filestream.write("\n")
+            region_no += 1
+
+    for region in regions2:
         plot_points([v.location for v in region], next(colors))
 
     plt.show()
