@@ -1,31 +1,31 @@
 class Point2D:
-    def __init__(self, x=0 , y=0):
+    def __init__(self, x: int=0, y: int=0):
         self.x = x
         self.y = y
 
-    def __str__(self):
-        return '<Point2D x:{} y:{}>'.format(self.x, self.y)
+    def __str__(self) -> str:
+        return f'<Point2D x:{self.x} y:{self.y}>'
 
 
 class Rectangle2D:
-    def __init__(self, location: Point2D=Point2D(), width=0, height=0):
+    def __init__(self, location: Point2D=Point2D(), width: int=0, height: int=0):
         self.location = location
         self.width = width
         self.height = height
 
-    def __str__(self):
-        return '<Rectangle2D location:{} width:{} height:{}>'.format(self.location, self.width, self.height)
+    def __str__(self) -> str:
+        return f'<Rectangle2D location:{self.location} width:{self.width} height:{self.height}>'
 
-    def left(self):
+    def left(self) -> int:
         return self.location.x
 
-    def bottom(self):
+    def bottom(self) -> int:
         return self.location.y
 
-    def right(self):
+    def right(self) -> int:
         return self.left() + self.width
 
-    def top(self):
+    def top(self) -> int:
         return self.bottom() + self.height
 
     def encapsulate(self, point: Point2D) -> None:
