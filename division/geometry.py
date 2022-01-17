@@ -1,3 +1,6 @@
+from typing import Iterable
+
+
 class Point2D:
     def __init__(self, x: int=0, y: int=0):
         self.x = x
@@ -28,6 +31,11 @@ class Rectangle2D:
     def top(self) -> int:
         return self.bottom() + self.height
 
+    def center(self) -> Point2D:
+        x = self.left() + self.width // 2
+        y = self.bottom() + self.height // 2
+        return Point2D(x, y)
+
     def encapsulate(self, point: Point2D) -> None:
         if self.left() > point.x:
             self.width += self.left() - point.x
@@ -42,3 +50,12 @@ class Rectangle2D:
 
     def contains(self, point: Point2D) -> bool:
         return point.x >= self.left() and point.x < self.right() and point.y >= self.bottom() and point.y < self.top()
+
+    def encapsulate_all(points: Iterable[Point2D]) -> 'Rectangle2D':
+        bounds: Rectangle2D = None
+        for point in points:
+            if bounds is None:
+                bounds = Rectangle2D(point, 0, 0)
+            else:
+                bounds.encapsulate(point)
+        return bounds
