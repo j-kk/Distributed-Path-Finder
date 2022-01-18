@@ -81,7 +81,7 @@ class AccumulatingNode(NodeBase):
         rect = self.rectangle
         sorted_items = sorted(self.items, key=lambda x: x.location.x)
         sorted_len = len(sorted_items)
-        median_index = min(sorted_len - 1, (sorted_len // 2) + 1)
+        median_index = sorted_len // 2
         median_item = sorted_items[median_index]
         rect1 = Rectangle2D(rect.location, median_item.location.x - rect.left(), rect.height)
         rect2 = Rectangle2D(Point2D(rect1.right(), rect.bottom()), rect.right() - rect1.right(), rect.height)
@@ -91,7 +91,7 @@ class AccumulatingNode(NodeBase):
         rect = self.rectangle
         sorted_items = sorted(self.items, key=lambda x: x.location.y)
         sorted_len = len(sorted_items)
-        median_index = min(sorted_len - 1, (sorted_len // 2) + 1)
+        median_index = sorted_len // 2
         median_item = sorted_items[median_index]
         rect1 = Rectangle2D(rect.location, rect.width, median_item.location.y - rect.bottom())
         rect2 = Rectangle2D(Point2D(rect.left(), rect1.top()), rect.width, rect.top() - rect1.top())
