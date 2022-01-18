@@ -1,9 +1,5 @@
-
-mod zmq_node;
-mod pathfinder;
-mod redis_connector;
+use PathFinder;
 
 #[tokio::main]
 async fn main() {
-    println!("Hello, world!");
 }

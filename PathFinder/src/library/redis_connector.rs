@@ -6,7 +6,7 @@ use redis::aio::{Connection};
 use serde::{Serialize, Deserialize};
 use tokio::sync::SemaphorePermit;
 use tokio::task::JoinHandle;
-use crate::pathfinder::RegionIdx;
+use crate::graph::{NodeIdx, RegionIdx};
 
 
 macro_rules! invalid_type_error {
@@ -21,9 +21,9 @@ macro_rules! invalid_type_error {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-struct ServerInfo {
+pub(crate) struct ServerInfo {
     id: usize,
-    addr: Box<str>,
+    pub(crate) addr: Box<str>,
     regions: Vec<RegionIdx>,
 }
 
@@ -43,7 +43,6 @@ impl ToRedisArgs for ServerInfo {
     fn write_redis_args<W>(&self, out: &mut W) where W: ?Sized + RedisWrite {
         let json_string = serde_json::to_string(self).unwrap();
         String::write_redis_args(&json_string, out);
-
     }
 }
 
@@ -88,12 +87,35 @@ impl FromRedisValue for BulkServerInfo {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct NetworkInfo {
     servers: Arc<tokio::sync::RwLock<BTreeMap<usize, ServerInfo>>>,
-    update_task: JoinHandle<()>,
 }
 
 impl NetworkInfo {
+    fn new(servers: Arc<tokio::sync::RwLock<BTreeMap<usize, ServerInfo>>>) -> Self {
+        NetworkInfo {
+            servers
+        }
+    }
+
+    pub(crate) async fn get_servers(&self) -> BTreeMap<usize, ServerInfo> {
+        let servers_reader = self.servers.read().await;
+        servers_reader.clone()
+    }
+
+    pub(crate) async fn get_server(&self, id: usize) -> Option<ServerInfo> {
+        let servers_reader = self.servers.read().await;
+        servers_reader.get(&id).map(|x| x.clone())
+    }
+}
+
+pub struct NetworkManager {
+    network_info: NetworkInfo,
+    update_task: JoinHandle<()>,
+}
+
+impl NetworkManager {
     async fn new(hget_conn: &mut redis::aio::Connection,
                  pubsub_conn: redis::aio::Connection) -> RedisResult<Self> {
         let mut pubsub = pubsub_conn.into_pubsub();
@@ -103,7 +125,7 @@ impl NetworkInfo {
 
         let servers = Arc::new(tokio::sync::RwLock::new(res.servers));
         let servers_for_task = servers.clone();
-        let update_task = tokio::task::spawn(async move { // todo spawn blocking?
+        let update_task = tokio::task::spawn(async move {
             let mut pubsub_stream = pubsub.on_message();
             loop {
                 let server_update: ServerInfo = pubsub_stream.next().await.unwrap().get_payload().unwrap(); // todo unsafe unwrap
@@ -112,27 +134,16 @@ impl NetworkInfo {
             }
         });
 
-        Ok(NetworkInfo {
-            servers,
+        Ok(NetworkManager {
+            network_info: NetworkInfo::new(servers),
             update_task,
         })
     }
-
-    async fn get_servers(&self) -> BTreeMap<usize, ServerInfo> {
-        let servers_reader = self.servers.read().await;
-        servers_reader.clone()
-    }
-
-    async fn get_server(&self, id: usize) -> Option<ServerInfo> {
-        let servers_reader = self.servers.read().await;
-        servers_reader.get(&id).map(|x| x.clone())
-    }
-
 }
 
 
 #[derive(Clone)]
-struct RedisConnector {
+pub struct RedisConnector {
     client: redis::Client,
     conn_pool: Arc<tokio::sync::Mutex<Vec<redis::aio::Connection>>>,
     conn_count: Arc<tokio::sync::Semaphore>,
@@ -159,7 +170,7 @@ impl RedisConnector {
             let mut pool_guard = self.conn_pool.lock().await;
             pool_guard.pop().unwrap()
         };
-        return (permit, conn)
+        return (permit, conn);
     }
 
     async fn release_connection(&self, conn: Connection) { // todo may be replaced with drop trait on connection
@@ -167,28 +178,35 @@ impl RedisConnector {
         pool_guard.push(conn)
     }
 
-    async fn get_server_id(&self, region_id: RegionIdx) -> RedisResult<usize> {
+    pub(crate) async fn get_server_id(&self, region_id: RegionIdx) -> RedisResult<usize> {
         let (_count_guard, mut conn) = self.claim_connection().await;
         let res = conn.get(format!("region_server_{}", region_id)).await;
         self.release_connection(conn).await;
         res
     }
 
-    async fn get_servers_info(&self) -> RedisResult<NetworkInfo> {
+    async fn get_servers_info(&self) -> RedisResult<NetworkManager> {
         let pubsub_conn = self.client.get_async_connection().await?;
         let (_count_guard, mut conn) = self.claim_connection().await;
-        let res = NetworkInfo::new(&mut conn, pubsub_conn).await;
+        let res = NetworkManager::new(&mut conn, pubsub_conn).await;
         self.release_connection(conn).await;
         res
     }
 
     async fn register_server(&self, server_info: &ServerInfo) -> RedisResult<()> {
         let (_count_guard, mut conn) = self.claim_connection().await;
-        let r1 = conn.publish("server_updates", server_info).await; // todo may result in losing conn
+        let r1 = conn.publish("server_updates", server_info).await;
         let r2 = conn.hset("server_info", server_info.id, server_info).await;
         self.release_connection(conn).await;
         r1?;
         r2?;
         Ok(())
+    }
+
+    pub(crate) async fn get_region(&self, node_id: NodeIdx) -> RedisResult<RegionIdx> {
+        let (_count_guard, mut conn) = self.claim_connection().await;
+        let region = conn.get(format!("node_region_{}", node_id)).await;
+        self.release_connection(conn).await;
+        region
     }
 }
