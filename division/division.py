@@ -53,6 +53,7 @@ with open(save_filename, "x") as save_filestream:
         region_no += 1
 
 for region in regions2:
+    print(len(region))
     plot_points([v.location for v in region], next(colors))
 
 plt.show()
