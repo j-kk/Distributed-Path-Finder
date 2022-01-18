@@ -21,10 +21,20 @@ impl From<RawNode> for Node {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct GroupInfo {
+    group_id: usize,
+    pub(crate) regions: Vec<RegionIdx>
+}
 
 #[async_trait::async_trait]
 pub trait GraphProvider {
     async fn get_region(&self, id: RegionIdx) -> Result<Graph>;
+}
+
+#[async_trait::async_trait]
+pub(crate) trait GroupInfoProvider {
+    async fn get_info(&self, group_id: usize) -> Result<GroupInfo>;
 }
 
 mod mock {
@@ -91,7 +101,7 @@ pub mod gcloud {
     use std::io::ErrorKind::{NotFound};
     use s3::{Bucket, Region};
     use s3::creds::Credentials;
-    use crate::graph_provider::{Graph, GraphProvider, Node, RawNode, Result, Vertex};
+    use crate::graph_provider::{Graph, GraphProvider, GroupInfo, GroupInfoProvider, Node, RawNode, Result, Vertex};
     use crate::graph::RegionIdx;
 
     pub struct CloudStorageProvider {
@@ -125,8 +135,8 @@ pub mod gcloud {
             Self::new(
                 &*env::var("GOOGLE_CLOUD_REGION").unwrap(),
                 &*env::var("GOOGLE_CLOUD_BUCKET").unwrap(),
-                &*env::var("GOOGLE_CLOUD_ACCESS_KEY").unwrap(),
-                &*env::var("GOOGLE_CLOUD_SECRET_KEY").unwrap(),
+                &*env::var("GOOGLE_ACCESS_KEY").unwrap(),
+                &*env::var("GOOGLE_SECRET_KEY").unwrap(),
             )
         }
     }
@@ -166,6 +176,17 @@ pub mod gcloud {
                 vertices,
                 id,
             ));
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl GroupInfoProvider for CloudStorageProvider {
+        async fn get_info(&self, group_id: usize) -> Result<GroupInfo> {
+            let (group_raw, return_code) = self.bucket.get_object(format!("group_{}", group_id)).await?;
+            if !(200 <= return_code && return_code < 300) {
+                return Err(Box::new(Error::from(NotFound)));
+            }
+            Ok(serde_json::from_slice::<GroupInfo>(&*group_raw)?)
         }
     }
 }

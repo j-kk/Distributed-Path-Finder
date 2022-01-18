@@ -95,11 +95,11 @@ impl Graph {
         }
     }
 
-    pub(crate) fn find_way(&self, source: NodeIdx, target: NodeInfo) -> Result<PathResult, GraphError> {
-        let mut current_node = match self.nodes.get(&source) {
+    pub(crate) fn find_way(&self, source: NodeInfo, target: NodeInfo) -> Result<PathResult, GraphError> {
+        let mut current_node = match self.nodes.get(&source.0) {
             Some(x) => { x }
             None => {
-                return Err(GraphError::NodeNotFound(source, self.region_idx));
+                return Err(GraphError::NodeNotFound(source.0, self.region_idx));
             }
         };
 

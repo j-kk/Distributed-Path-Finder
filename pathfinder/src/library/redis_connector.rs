@@ -110,8 +110,8 @@ impl NetworkInfo {
     }
 }
 
-pub struct NetworkManager {
-    network_info: NetworkInfo,
+pub(crate) struct NetworkManager {
+    pub(crate) network_info: NetworkInfo,
     update_task: JoinHandle<()>,
 }
 
@@ -150,8 +150,8 @@ pub struct RedisConnector {
 }
 
 impl RedisConnector {
-    async fn new(redis_url: &str,
-                 connection_count: usize) -> RedisResult<Self> {
+    pub(crate) async fn new(redis_url: &str,
+                            connection_count: usize) -> RedisResult<Self> {
         let client = redis::Client::open(redis_url)?;
         let mut conn_pool = Vec::new();
         for _ in 0..connection_count {
@@ -185,7 +185,7 @@ impl RedisConnector {
         res
     }
 
-    async fn get_servers_info(&self) -> RedisResult<NetworkManager> {
+    pub(crate) async fn get_servers_info(&self) -> RedisResult<NetworkManager> {
         let pubsub_conn = self.client.get_async_connection().await?;
         let (_count_guard, mut conn) = self.claim_connection().await;
         let res = NetworkManager::new(&mut conn, pubsub_conn).await;
