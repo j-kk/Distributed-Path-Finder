@@ -91,8 +91,8 @@ if param_from_args:
     redis_address = sys.argv[3]
     redis_port = sys.argv[4]
 else:
-    redis_address = os.environ['REDIS_URL']
-    redis_port = os.environ['REDIS_PORT']
+    redis_address = os.environ['REDIS_SERVICE_HOST']
+    redis_port = os.environ['REDIS_SERVICE_PORT']
 
 redis_handle = redis.Redis(host=redis_address, port=redis_port)
 request_counter = RequestCounter()
