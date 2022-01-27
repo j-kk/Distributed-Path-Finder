@@ -153,7 +153,14 @@ pub struct RedisConnector {
 impl RedisConnector {
     pub(crate) async fn new(redis_url: &str,
                             connection_count: usize) -> RedisResult<Self> {
-        let client = redis::Client::open(redis_url)?;
+        log::info!("Connecting to redis {}", redis_url);
+        let client = match redis::Client::open(redis_url) {
+            Ok(client) => {client}
+            Err(err) => {
+                log::error!("{}", err);
+                return Err(err);
+            }
+        };
         let mut conn_pool = Vec::new();
         for _ in 0..connection_count {
             conn_pool.push(client.get_async_connection().await?);

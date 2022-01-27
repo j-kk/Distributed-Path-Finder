@@ -3,7 +3,7 @@ use std::env;
 use std::sync::Arc;
 use async_channel::{Receiver, Sender, unbounded};
 use tokio::task::JoinHandle;
-use crate::domain::{NodeInfo, PathPoint, PathRequest};
+use crate::domain::{PathPoint, PathRequest};
 use crate::graph::{Graph, GraphError, PathResult, RegionIdx};
 use crate::graph_provider::{GraphProvider, GroupInfoProvider};
 use crate::redis_connector::{RedisConnector};
@@ -31,13 +31,47 @@ pub struct Configuration {
 
 impl Configuration {
     pub fn from_env() -> Result<Configuration> {
+        let id: usize = match env::var("GROUP_ID") {
+            Ok(s) => {
+                log::debug!("Got ID from env var {}", s);
+                s.parse()?
+            }
+            Err(_) => {
+                match env::var("HOSTNAME") {
+                    Ok(s) => {
+                        log::debug!("Decoding ID from hostname {}", s);
+                        let splitted: Vec<&str> = s.split('-').collect();
+                        log::debug!("Got ID from hostname {}", splitted[1]);
+                        splitted[1].parse()?
+                    }
+                    Err(err) => {
+                        log::error!("No ID given");
+                        return Err(Box::new(err));
+                    }
+                }
+            }
+        };
+        let redis_url = match env::var("REDIS_URL") {
+            Ok(url) => { url }
+            Err(_) => {
+                match env::var("REDIS_SERVICE_HOST") {
+                    Ok(url) => { format!("redis://{}:6379", url) }
+                    Err(err) => {
+                        log::error!("No redis url given");
+                        return Err(Box::new(err));
+                    }
+                }
+            }
+        };
+
+
         Ok(Configuration {
             google_region: env::var("GOOGLE_CLOUD_REGION")?,
             google_bucket: env::var("GOOGLE_CLOUD_BUCKET")?,
             google_access_key: env::var("GOOGLE_ACCESS_KEY")?,
             google_secret_key: env::var("GOOGLE_SECRET_KEY")?,
-            id: env::var("GROUP_ID")?.parse()?,
-            redis_url: env::var("REDIS_URL")?,
+            id,
+            redis_url,
             redis_connection_count: env::var("REDIS_CONNECTION_COUNT")?.parse()?,
             worker_count: env::var("WORKER_COUNT")?.parse()?,
         })

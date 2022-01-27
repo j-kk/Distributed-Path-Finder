@@ -46,7 +46,7 @@ impl From<RawVertex> for Vertex {
             b: raw_vertex.b,
             weight: raw_vertex.weight,
             id: raw_vertex.id,
-            region_bits: BitVec::from_iter(bool_vec)
+            region_bits: BitVec::from_iter(bool_vec),
         }
     }
 }
@@ -169,7 +169,7 @@ pub mod gcloud {
     use std::io::ErrorKind::{NotFound};
     use s3::{Bucket, Region};
     use s3::creds::Credentials;
-    use crate::graph_provider::{Graph, GraphProvider, GroupInfo, GroupInfoProvider, Node, RawNode, Result, Vertex};
+    use crate::graph_provider::{Graph, GraphProvider, GroupInfo, GroupInfoProvider, Node, RawNode, RawVertex, Result, Vertex};
     use crate::graph::RegionIdx;
 
     pub struct CloudStorageProvider {
@@ -213,11 +213,12 @@ pub mod gcloud {
     impl GraphProvider for CloudStorageProvider {
         async fn get_region(&self, id: RegionIdx) -> Result<Graph> {
             log::info!("Retrieving region data {}", id);
-            let (nodes_data, return_code) = self.bucket.get_object(format!("nodes_{}", id)).await?;
-            if !(200 <= return_code &&   return_code < 300) {
+            let (nodes_data, return_code) = self.bucket.get_object(format!("nodes_{}.csv", id)).await?;
+            if !(200 <= return_code && return_code < 300) {
                 return Err(Box::new(Error::from(NotFound)));
             }
-            let mut nodes_reader = csv::Reader::from_reader(&*nodes_data);
+
+            let mut nodes_reader = csv::ReaderBuilder::new().has_headers(false).from_reader(&*nodes_data);
             let mut nodes = HashMap::new();
             let mut nodes_read = nodes_reader.deserialize::<RawNode>();
             while let Some(record) = nodes_read.next() {
@@ -226,18 +227,20 @@ pub mod gcloud {
                 nodes.insert(node.id, node);
             }
 
-            let (vertices_data, return_code) = self.bucket.get_object(format!("vertices_{}", id)).await?;
+            let (vertices_data, return_code) = self.bucket.get_object(format!("vertices_{}.csv", id)).await?;
             if !(200 <= return_code && return_code < 300) {
                 return Err(Box::new(Error::from(NotFound)));
             }
-            let mut vertices_reader = csv::Reader::from_reader(&*vertices_data);
+
+            let mut vertices_reader = csv::ReaderBuilder::new().has_headers(false).from_reader(&*vertices_data);
             let mut vertices = HashMap::new();
-            let mut vertices_read = vertices_reader.deserialize::<Vertex>();
+            let mut vertices_read = vertices_reader.deserialize::<RawVertex>();
             while let Some(record) = vertices_read.next() {
                 let record = record?;
-                nodes.get_mut(&record.a).map(|node| node.connections.push(record.id));
-                nodes.get_mut(&record.b).map(|node| node.connections.push(record.id));
-                vertices.insert(record.id, record);
+                let vertex = Vertex::from(record);
+                nodes.get_mut(&vertex.a).map(|node| node.connections.push(vertex.id));
+                nodes.get_mut(&vertex.b).map(|node| node.connections.push(vertex.id));
+                vertices.insert(vertex.id, vertex);
             }
 
             return Ok(Graph::new(
@@ -253,9 +256,24 @@ pub mod gcloud {
         async fn get_info(&self, group_id: usize) -> Result<GroupInfo> {
             let (group_raw, return_code) = self.bucket.get_object(format!("group_{}.json", group_id)).await?;
             if !(200 <= return_code && return_code < 300) {
+                let body: String = String::from_utf8(group_raw).unwrap_or(String::from("???"));
+                log::error!("Cloud storage returned {}: {}", return_code, body);
                 return Err(Box::new(Error::from(NotFound)));
             }
             Ok(serde_json::from_slice::<GroupInfo>(&*group_raw)?)
+        }
+    }
+
+    #[cfg(test)]
+    mod test {
+        use crate::graph_provider::gcloud::CloudStorageProvider;
+        use crate::{GraphProvider, GroupInfoProvider};
+
+        #[tokio::test]
+        async fn test_get_group() {
+            let cloud = CloudStorageProvider::from_env();
+            cloud.get_info(2).await.unwrap();
+            cloud.get_region(1).await.unwrap();
         }
     }
 }

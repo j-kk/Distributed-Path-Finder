@@ -78,7 +78,8 @@ impl PathRequest {
 
 }#[cfg(test)]
 mod test {
-    use crate::{NodeInfo, PathPoint, PathRequest};
+    use crate::{PathPoint, PathRequest};
+    use crate::domain::NodeInfo;
 
     #[tokio::test]
     async fn sample_request() {

@@ -18,20 +18,24 @@ RUN adduser \
 
 WORKDIR /pathfinder
 
+
 COPY ./Cargo.toml .
 COPY ./Cargo.lock .
 
 COPY ./src ./src
-RUN ls
-RUN pwd
 
 # We no longer need to use the x86_64-unknown-linux-musl target
-RUN cargo build --release
+RUN cargo clean && \
+    cargo build --release
 
 ####################################################################################################
 ## Final image
 ####################################################################################################
-FROM debian:buster-slim
+FROM debian:bullseye
+
+RUN apt update
+RUN apt install -y libssl-dev
+RUN apt install -y ca-certificates
 
 # Import from builder.
 COPY --from=builder /etc/passwd /etc/passwd
