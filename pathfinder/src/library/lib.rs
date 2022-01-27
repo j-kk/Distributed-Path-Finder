@@ -189,6 +189,7 @@ impl Worker {
     }
 
     async fn work(&self) {
+        self.free_sender.send(self.id).await.unwrap();
         loop {
             match self.task_receiver.recv().await {
                 Ok(request) => {
@@ -242,7 +243,8 @@ impl Server {
                 i,
             ).await?;
             task_senders.push(task_sender);
-            workers.push(tokio::task::spawn(async move { worker.work().await }))
+            workers.push(tokio::task::spawn(async move { worker.work().await }));
+            log::debug!("Worker spawned {}", i);
         }
         log::info!("Ready to work!");
         Ok(Server {

@@ -183,7 +183,7 @@ pub mod gcloud {
                    secret_key: &str) -> Self {
             let region = Region::Custom {
                 region: region.to_owned(),
-                endpoint: "https://storage.googleapis.com".to_owned(),
+                endpoint: "http://storage.googleapis.com".to_owned(),
             };
             let bucket = Bucket::new(bucket,
                                      region,
