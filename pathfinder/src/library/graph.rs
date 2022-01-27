@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::fmt::Formatter;
 use bitvec::vec::BitVec;
 use serde::{Serialize, Deserialize};
-use crate::zmq_node::NodeInfo;
+use crate::domain::{NodeInfo, PathPoint};
 
 pub type RegionIdx = u32;
 pub type VertexIdx = usize;
@@ -35,22 +35,23 @@ pub struct Vertex {
     pub(crate) b: NodeIdx,
     pub(crate) weight: u64,
     pub(crate) id: VertexIdx,
-    region_bits: BitVec, // todo implement! (or check)
+    pub(crate) region_bits: BitVec, // todo implement! (or check)
 }
 
 #[derive(Debug, Clone)]
 pub struct Node {
     pub(crate) connections: Vec<VertexIdx>,
     pub(crate) id: NodeIdx,
-    cord_x: u64,
-    cord_y: u64,
+    pub(crate) region: RegionIdx,
+    pub(crate) cord_x: u64,
+    pub(crate) cord_y: u64,
 }
 
 #[derive(Debug, Clone)]
 pub struct Graph {
-    nodes: HashMap<NodeIdx, Node>,
+    pub(crate) nodes: HashMap<NodeIdx, Node>,
     vertices: HashMap<VertexIdx, Vertex>,
-    region_idx: RegionIdx,
+    pub(crate) region_idx: RegionIdx,
 }
 
 impl Vertex {
@@ -68,11 +69,13 @@ impl Vertex {
 impl Node {
     pub(crate) fn new(connections: Vec<VertexIdx>,
                       id: NodeIdx,
+                      region: RegionIdx,
                       cord_x: u64,
                       cord_y: u64) -> Self {
         Self {
             connections,
             id,
+            region,
             cord_x,
             cord_y,
         }
@@ -80,8 +83,8 @@ impl Node {
 }
 
 pub(crate) enum PathResult {
-    TargetReached(Vec<NodeIdx>, u64),
-    Continue(Vec<NodeIdx>, u64, NodeIdx),
+    TargetReached(Vec<PathPoint>, u64),
+    Continue(Vec<PathPoint>, u64, RegionIdx),
 }
 
 impl Graph {
@@ -93,6 +96,10 @@ impl Graph {
             vertices,
             region_idx,
         }
+    }
+
+    pub(crate) fn get_node(&self, idx: NodeIdx) -> Option<&Node> {
+        self.nodes.get(&idx)
     }
 
     pub(crate) fn find_way(&self, source: NodeInfo, target: NodeInfo) -> Result<PathResult, GraphError> {
@@ -145,12 +152,19 @@ impl Graph {
 
             let new_node_id = vertex.get_neighbour(current_node.id);
             cost += vertex.weight;
-            path.push(new_node_id);
 
             current_node = match self.nodes.get(&new_node_id) {
-                Some(x) => { x }
+                Some(node) => {
+
+                    let path_point = PathPoint::new(new_node_id, node.region, node.cord_x, node.cord_y);
+                    path.push(path_point);
+
+                    if node.region != self.region_idx {
+                        return Ok(PathResult::Continue(path, cost, node.region));
+                    }
+                    node }
                 None => {
-                    return Ok(PathResult::Continue(path, cost, new_node_id));
+                    return Err(GraphError::VertexNotFound(new_node_id, self.region_idx));
                 }
             };
         }

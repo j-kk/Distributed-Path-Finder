@@ -3,16 +3,17 @@ use std::env;
 use std::sync::Arc;
 use async_channel::{Receiver, Sender, unbounded};
 use tokio::task::JoinHandle;
+use crate::domain::{NodeInfo, PathPoint, PathRequest};
 use crate::graph::{Graph, GraphError, PathResult, RegionIdx};
 use crate::graph_provider::{GraphProvider, GroupInfoProvider};
-use crate::redis_connector::RedisConnector;
-use crate::zmq_node::{NodeConnectionsManager, NodeInfo, NodeListener, PathRequest, ReplyConnector, ZMQError};
+use crate::redis_connector::{RedisConnector};
+use crate::node_connector::{NodeSender, ResultReplier, ConnectionError, NodeListener};
 
-mod zmq_node;
+mod node_connector;
 mod graph;
 mod redis_connector;
-mod graph_provider;
-mod error;
+pub mod graph_provider;
+mod domain;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
@@ -25,13 +26,11 @@ pub struct Configuration {
     id: usize,
     redis_url: String,
     redis_connection_count: usize,
-    listen_addr: String,
-    reply_addr: String,
     worker_count: usize,
 }
 
 impl Configuration {
-    pub fn from_env() -> Result<Configuration>{
+    pub fn from_env() -> Result<Configuration> {
         Ok(Configuration {
             google_region: env::var("GOOGLE_CLOUD_REGION")?,
             google_bucket: env::var("GOOGLE_CLOUD_BUCKET")?,
@@ -40,16 +39,56 @@ impl Configuration {
             id: env::var("GROUP_ID")?.parse()?,
             redis_url: env::var("REDIS_URL")?,
             redis_connection_count: env::var("REDIS_CONNECTION_COUNT")?.parse()?,
-            listen_addr: env::var("LISTEN_ADDR")?,
-            reply_addr: env::var("REPLY_ADDR")?,
             worker_count: env::var("WORKER_COUNT")?.parse()?,
+        })
+    }
+}
+
+pub struct Context {
+    result_reply: Box<dyn ResultReplier>,
+    node_listener: Box<dyn NodeListener>,
+    node_sender_mgr: Box<dyn NodeSender>,
+    redis_connector: RedisConnector,
+}
+
+impl Context {
+    pub async fn redis_ctx(config: &Configuration) -> Result<Context> {
+        let redis_connector = redis_connector::RedisConnector::new(&*config.redis_url, config.redis_connection_count).await?;
+        let node_listener = Box::new(node_connector::redis_connector::RedisNodeListener::new(&redis_connector, config.id).await?);
+        let result_reply = Box::new(node_connector::redis_connector::RedisReplier::new(redis_connector.clone()).await?);
+
+        let node_sender_mgr = Box::new(node_connector::redis_connector::RedisConnectionsManager::new(redis_connector.clone()).await?);
+        Ok(Context {
+            redis_connector,
+            result_reply,
+            node_listener,
+            node_sender_mgr,
+        })
+    }
+
+    pub async fn zmq_ctx(config: &Configuration) -> Result<Context> {
+        let listen_addr = env::var("LISTEN_ADDR")?;
+        let reply_addr = env::var("REPLY_ADDR")?;
+
+        let redis_connector = redis_connector::RedisConnector::new(&*config.redis_url, config.redis_connection_count).await?;
+        let node_listener = Box::new(node_connector::zmq_connector::ZMQNodeListener::new(&*listen_addr).await?);
+        let result_reply = Box::new(node_connector::zmq_connector::ZMQReplier::new(&*reply_addr).await?);
+
+        let network_mgr = redis_connector.get_servers_info().await?;
+
+        let node_sender_mgr = Box::new(node_connector::zmq_connector::ZMQConnectionsManager::new(network_mgr.network_info).await?);
+        Ok(Context {
+            redis_connector,
+            result_reply,
+            node_listener,
+            node_sender_mgr,
         })
     }
 }
 
 
 pub struct Server {
-    zmq_listener: NodeListener,
+    node_listener: Box<dyn NodeListener>,
     workers: Vec<JoinHandle<()>>,
     task_senders: Vec<Sender<PathRequest>>,
     free_receiver: Receiver<usize>,
@@ -58,8 +97,8 @@ pub struct Server {
 struct Worker {
     redis_connector: RedisConnector,
     graphs: Arc<HashMap<RegionIdx, Graph>>,
-    zmq_reply: ReplyConnector,
-    zmq_conn_mgr: NodeConnectionsManager,
+    result_reply: Box<dyn ResultReplier>,
+    node_sender_mgr: Box<dyn NodeSender>,
     task_receiver: Receiver<PathRequest>,
     free_sender: Sender<usize>,
     id: usize,
@@ -68,8 +107,8 @@ struct Worker {
 impl Worker {
     async fn new(redis_connector: RedisConnector,
                  graphs: Arc<HashMap<RegionIdx, Graph>>,
-                 zmq_reply: ReplyConnector,
-                 zmq_conn_mgr: NodeConnectionsManager,
+                 zmq_reply: Box<dyn ResultReplier>,
+                 zmq_conn_mgr: Box<dyn NodeSender>,
                  task_receiver: Receiver<PathRequest>,
                  free_sender: Sender<usize>,
                  id: usize) -> Result<Worker> {
@@ -77,8 +116,8 @@ impl Worker {
         Ok(Worker {
             redis_connector,
             graphs,
-            zmq_reply,
-            zmq_conn_mgr,
+            result_reply: zmq_reply,
+            node_sender_mgr: zmq_conn_mgr,
             task_receiver,
             free_sender,
             id,
@@ -86,19 +125,30 @@ impl Worker {
     }
 
     async fn serve_request(&self, request: &PathRequest) -> Result<()> {
-        let start_node = request.last_node;
+        let start_node = match request.get_last_node() {
+            None => {
+                let node = self.graphs.get(&request.source.1).ok_or(GraphError::NodeNotFound(request.source.0, request.source.1))?.get_node(request.source.0).ok_or(GraphError::NodeNotFound(request.source.0, request.source.1))?;
+
+                let start_point = PathPoint::new(request.source.0,
+                                                 request.source.1,
+                                                 node.cord_x, node.cord_y);
+                request.update(vec![start_point], 0);
+                request.source.clone()
+            }
+            Some(last_node) => { last_node }
+        };
         let path_result = self.graphs.get(&start_node.1).ok_or(GraphError::NodeNotFound(start_node.0, start_node.1))?.find_way(start_node, request.target)?;
         match path_result {
             PathResult::TargetReached(path, cost) => {
-                let reply = request.update(path, request.target.clone(),cost);
-                self.zmq_reply.send(&reply).await?;
+                let reply = request.update(path, cost);
+                log::debug!("Target reached! Sending over the result. Request id: {}, total cost: {}", request.request_id, cost);
+                self.result_reply.send(&reply).await?;
             }
-            PathResult::Continue(path, cost, next_idx) => {
-                let next_region = self.redis_connector.get_region(next_idx).await?;
-                let next_node = NodeInfo(next_idx, next_region);
-                let new_request = request.update(path, next_node, cost);
+            PathResult::Continue(path, cost, next_region) => {
+                let new_request = request.update(path, cost);
                 let server_id = self.redis_connector.get_server_id(next_region).await?;
-                self.zmq_conn_mgr.send_request(server_id, new_request).await?;
+                log::debug!("Reached region boundary. Sending over the request to server {}. Request id: {}, total cost: {}", server_id, request.request_id, cost);
+                self.node_sender_mgr.send_request(server_id, new_request).await?;
             }
         }
         Ok(())
@@ -109,11 +159,11 @@ impl Worker {
             match self.task_receiver.recv().await {
                 Ok(request) => {
                     if let Err(err) = self.serve_request(&request).await {
-                        log::info!("Worker {} couldn't handle request {:?}, details: {:?}", self.id, request, err)
+                        log::warn!("Worker {} couldn't handle request {:?}, details: {:?}", self.id, request, err)
                     }
                 }
                 Err(err) => {
-                    log::info!("Worker {} is shutting down, details: {:?}", self.id, err)
+                    log::warn!("Worker {} is shutting down, details: {:?}", self.id, err)
                 }
             }
             self.free_sender.send(self.id).await.unwrap();
@@ -122,7 +172,7 @@ impl Worker {
 }
 
 impl Server {
-    pub async fn new(config: Configuration) -> Result<Server> {
+    pub async fn new(config: Configuration, context: Context) -> Result<Server> {
         let graph_provider = graph_provider::gcloud::CloudStorageProvider::new(
             &*config.google_region,
             &*config.google_bucket,
@@ -133,16 +183,14 @@ impl Server {
 
         let mut graphs = HashMap::new();
         for region_id in group_info.regions.iter() {
-            graphs.insert(*region_id, graph_provider.get_region(*region_id).await.unwrap());
+            log::info!("Loading region {}", region_id);
+            let graph = graph_provider.get_region(*region_id).await.unwrap();
+            context.redis_connector.set_group(*region_id, group_info.group_id).await?;
+            context.redis_connector.set_region(&graph, *region_id).await?;
+            graphs.insert(*region_id, graph);
+            log::debug!("Region {} successfully loaded", region_id);
         }
 
-        let redis_connector = redis_connector::RedisConnector::new(&*config.redis_url, config.redis_connection_count).await?;
-        let zmq_listener = zmq_node::NodeListener::new(&*config.listen_addr).await?;
-        let zmq_reply = zmq_node::ReplyConnector::new(&*config.reply_addr).await?;
-
-        let network_mgr = redis_connector.get_servers_info().await?;
-
-        let zmq_conn_mgr = zmq_node::NodeConnectionsManager::new(network_mgr.network_info).await?;
 
         let graphs = Arc::new(graphs);
         let mut workers = vec![];
@@ -151,23 +199,23 @@ impl Server {
         for i in 0..config.worker_count {
             let (task_sender, task_receiver) = unbounded();
             let worker = Worker::new(
-                redis_connector.clone(),
+                context.redis_connector.clone(),
                 graphs.clone(),
-                zmq_reply.clone(),
-                zmq_conn_mgr.clone(),
+                context.result_reply.clone(),
+                context.node_sender_mgr.clone(),
                 task_receiver,
                 free_sender.clone(),
-                i
+                i,
             ).await?;
             task_senders.push(task_sender);
-            workers.push(tokio::task::spawn(async move { worker.work().await;}))
+            workers.push(tokio::task::spawn(async move { worker.work().await }))
         }
-
+        log::info!("Ready to work!");
         Ok(Server {
-            zmq_listener,
+            node_listener: context.node_listener,
             workers,
             task_senders,
-            free_receiver
+            free_receiver,
         })
     }
 
@@ -180,16 +228,16 @@ impl Server {
                     continue;
                 }
             };
-            match self.zmq_listener.get_new_request().await {
+            match self.node_listener.get_new_request().await {
                 Ok(request) => {
+                    log::info!("Dispatching request with id {} to worker {}", request.request_id, worker_id);
                     if let Err(err) = self.task_senders[worker_id].send(request).await {
                         panic!("Unable to delegate job  to worker {}, error details: {}", worker_id, err)
-                        // todo panic
                     }
                 }
                 Err(err) => {
                     match err {
-                        ZMQError::ProtocolError(_) => {
+                        ConnectionError::ProtocolError(_) => {
                             panic!("{}", err)
                         }
                         _ => {

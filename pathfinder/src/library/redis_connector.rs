@@ -6,6 +6,7 @@ use redis::aio::{Connection};
 use serde::{Serialize, Deserialize};
 use tokio::sync::SemaphorePermit;
 use tokio::task::JoinHandle;
+use crate::Graph;
 use crate::graph::{NodeIdx, RegionIdx};
 
 
@@ -164,7 +165,7 @@ impl RedisConnector {
         })
     }
 
-    async fn claim_connection(&self) -> (SemaphorePermit<'_>, redis::aio::Connection) {
+    pub(crate) async fn claim_connection(&self) -> (SemaphorePermit<'_>, redis::aio::Connection) {
         let permit = self.conn_count.acquire().await.unwrap(); // todo unwrap
         let conn = {
             let mut pool_guard = self.conn_pool.lock().await;
@@ -173,7 +174,7 @@ impl RedisConnector {
         return (permit, conn);
     }
 
-    async fn release_connection(&self, conn: Connection) { // todo may be replaced with drop trait on connection
+    pub(crate) async fn release_connection(&self, conn: Connection) { // todo may be replaced with drop trait on connection
         let mut pool_guard = self.conn_pool.lock().await;
         pool_guard.push(conn)
     }
@@ -208,5 +209,34 @@ impl RedisConnector {
         let region = conn.get(format!("node_region_{}", node_id)).await;
         self.release_connection(conn).await;
         region
+    }
+
+    pub(crate) async fn spawn_connection(&self) -> RedisResult<redis::aio::Connection> {
+        self.client.get_async_connection().await
+    }
+
+    pub(crate) async fn set_group(&self, region_id: RegionIdx, group_id: usize) -> RedisResult <()> {
+        let (_count_guard, mut conn) = self.claim_connection().await;
+        let res = conn.set(format!("region_server_{}", region_id), group_id).await;
+        self.release_connection(conn).await;
+        res
+    }
+
+    pub(crate) async fn set_region(&self, graph: &Graph, region_id: RegionIdx) -> RedisResult<()> {
+        let (_count_guard, mut conn) = self.claim_connection().await;
+        let mut nodes_ids = vec![];
+        let mut nodes_vals = vec![];
+        for (id, node) in graph.nodes.iter() {
+            if node.region == region_id {
+                nodes_vals.push((format!("node_region_{}", id), region_id));
+                nodes_ids.push(format!("node_region_{}", id));
+            }
+        }
+        let res1 = conn.del(&*nodes_ids).await;
+        let res2 = conn.mset_nx(&*nodes_vals).await;
+        self.release_connection(conn).await;
+        res1?;
+        res2
+
     }
 }
