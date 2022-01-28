@@ -108,16 +108,17 @@ impl Graph {
 
     pub(crate) fn find_way_local(&self, source: NodeInfo,
                                  target: NodeInfo) -> Result<PathResult, GraphError> {
-        let mut queue: PriorityQueue<(NodeIdx, Vec<PathPoint>), u64> = PriorityQueue::new();
+        let mut queue: PriorityQueue<(NodeIdx, Vec<PathPoint>), i64> = PriorityQueue::new();
         let mut visited = HashSet::new();
         let start_node = self.nodes.get(&source.0).ok_or(GraphError::NodeNotFound(source.0, self.region_idx))?;
         queue.push((start_node.id, vec![]), 0);
 
         while queue.len() > 0 {
-            let ((node_idx, path), cost): ((NodeIdx, Vec<PathPoint>), u64) = queue.pop().unwrap();
+            let ((node_idx, path), mut cost): ((NodeIdx, Vec<PathPoint>), i64) = queue.pop().unwrap();
+            cost *= -1;
             let node = self.nodes.get(&node_idx).ok_or(GraphError::NodeNotFound(node_idx, self.region_idx))?;
             if node.id == target.0 {
-                return Ok(PathResult::TargetReached(path, cost));
+                return Ok(PathResult::TargetReached(path, cost as u64));
             }
             for vertex_id in node.connections.iter() {
                 let vertex = self.vertices.get(&vertex_id).ok_or(GraphError::VertexNotFound(*vertex_id, self.region_idx))?;
@@ -127,7 +128,7 @@ impl Graph {
                         visited.insert(next);
                         let mut new_path = path.clone();
                         new_path.push(PathPoint::from(next_node.clone()));
-                        queue.push((next_node.id, new_path), cost + vertex.weight);
+                        queue.push((next_node.id, new_path), -(cost + vertex.weight as i64));
                     }
                 }
             }
