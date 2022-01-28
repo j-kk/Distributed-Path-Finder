@@ -14,11 +14,11 @@ struct RawNode {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct RawVertex {
+    pub(crate) id: VertexIdx,
     pub(crate) a: NodeIdx,
     pub(crate) b: NodeIdx,
     pub(crate) weight: u64,
-    pub(crate) id: VertexIdx,
-    region_bits: String, // todo implement! (or check)
+    region_bits: String,
 }
 
 impl From<RawNode> for Node {
