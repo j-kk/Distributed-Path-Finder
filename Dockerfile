@@ -19,10 +19,10 @@ RUN adduser \
 WORKDIR /pathfinder
 
 
-COPY ./Cargo.toml .
-COPY ./Cargo.lock .
+COPY Cargo.toml .
+COPY Cargo.lock .
 
-COPY ./src ./src
+COPY src ./src
 
 # We no longer need to use the x86_64-unknown-linux-musl target
 RUN cargo clean && \

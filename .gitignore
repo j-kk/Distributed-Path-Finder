@@ -131,3 +131,6 @@ dmypy.json
 *.csv
 *.txt
 *.7z
+
+res
+.idea
