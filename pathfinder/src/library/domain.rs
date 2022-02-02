@@ -1,4 +1,4 @@
-use crate::graph::NodeIdx;
+use crate::graph::{Node, NodeIdx};
 use crate::RegionIdx;
 use serde::{Serialize, Deserialize};
 
@@ -6,13 +6,14 @@ use serde::{Serialize, Deserialize};
 #[derive(Serialize, Deserialize, Debug, Clone, Copy)]
 pub struct NodeInfo(pub(crate) NodeIdx, pub(crate) RegionIdx);
 
-#[derive(Serialize, Deserialize, Debug, Clone, Copy)]
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, Hash)]
 pub struct PathPoint {
     id: NodeIdx,
     region_id: RegionIdx,
     cord_x: u64,
     cord_y: u64,
 }
+
 
 impl PathPoint {
     pub(crate) fn new(id: NodeIdx,
@@ -28,55 +29,93 @@ impl PathPoint {
     }
 }
 
+impl From<Node> for PathPoint {
+    fn from(node: Node) -> Self {
+        Self::new(node.id,
+                  node.region,
+                  node.cord_x,
+                  node.cord_y)
+    }
+}
+
+impl PartialEq<Self> for PathPoint {
+    fn eq(&self, other: &Self) -> bool {
+        return self.id == other.id && self.region_id == other.region_id && self.cord_x == other.cord_x && self.cord_y == other.cord_y;
+    }
+}
+
+impl Eq for PathPoint {}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub(crate) struct PathRequest {
     pub(crate) request_id: usize,
     pub(crate) source: NodeInfo,
     pub(crate) target: NodeInfo,
+    pub(crate) last: NodeIdx,
     path: Vec<PathPoint>,
     cost: u64,
+    pub(crate) visited_regions: Vec<RegionIdx>,
 }
 
 impl PathRequest {
     pub(crate) fn new(request_id: usize,
                       source: NodeInfo,
                       target: NodeInfo,
+                      last: NodeIdx,
                       path: Vec<PathPoint>,
-                      cost: u64) -> PathRequest {
+                      cost: u64,
+                      visited_regions: Vec<RegionIdx>) -> PathRequest {
         PathRequest {
             request_id,
             source,
             target,
+            last,
             path,
             cost,
+            visited_regions,
         }
     }
 
-    pub(crate) fn update(&self,
-                         mut path: Vec<PathPoint>,
-                         cost: u64) -> Self {
+    pub(crate) fn update_without_region(&self,
+                                        mut path: Vec<PathPoint>,
+                                        last: NodeIdx,
+                                        cost: u64) -> Self {
         let mut new_path = self.path.clone();
         new_path.append(&mut path);
+
         PathRequest::new(
             self.request_id,
             self.source.clone(),
             self.target.clone(),
+            last,
             new_path,
             self.cost.clone() + cost,
+            self.visited_regions.clone(),
         )
     }
+    pub(crate) fn update(&self,
+                         mut path: Vec<PathPoint>,
+                         last: NodeIdx,
+                         cost: u64,
+                         new_region_idx: RegionIdx) -> Self {
+        let mut new_path = self.path.clone();
+        new_path.append(&mut path);
+        let mut visited_regions = self.visited_regions.clone();
+        visited_regions.push(new_region_idx);
 
-    pub(crate) fn get_last_node(&self) -> Option<NodeInfo> {
-        let node = if self.path.len() > 0 {
-            &self.path[self.path.len() - 1]
-        } else {
-            return None;
-        };
-        Some(NodeInfo(node.id, node.region_id))
+        PathRequest::new(
+            self.request_id,
+            self.source.clone(),
+            self.target.clone(),
+            last,
+            new_path,
+            self.cost.clone() + cost,
+            visited_regions,
+        )
     }
+}
 
-
-}#[cfg(test)]
+#[cfg(test)]
 mod test {
     use crate::{PathPoint, PathRequest};
     use crate::domain::NodeInfo;
@@ -87,8 +126,10 @@ mod test {
             request_id: 12,
             source: NodeInfo(1, 1),
             target: NodeInfo(100, 10),
+            last: 1,
             path: vec![],
             cost: 0,
+            visited_regions: vec![],
         };
         let serialized_empty = serde_json::to_string(&request).unwrap();
         println!("{}", serialized_empty);
@@ -112,6 +153,5 @@ mod test {
 
         let serialized_empty = serde_json::to_string(&request).unwrap();
         println!("{}", serialized_empty);
-
     }
 }

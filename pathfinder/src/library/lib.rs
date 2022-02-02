@@ -3,8 +3,8 @@ use std::env;
 use std::sync::Arc;
 use async_channel::{Receiver, Sender, unbounded};
 use tokio::task::JoinHandle;
-use crate::domain::{PathPoint, PathRequest};
-use crate::graph::{Graph, GraphError, PathResult, RegionIdx};
+use crate::domain::{NodeInfo, PathRequest};
+use crate::graph::{Continuation, Graph, GraphError, PathResult, RegionIdx};
 use crate::graph_provider::{GraphProvider, GroupInfoProvider};
 use crate::redis_connector::{RedisConnector};
 use crate::node_connector::{NodeSender, ResultReplier, ConnectionError, NodeListener};
@@ -126,6 +126,7 @@ pub struct Server {
     workers: Vec<JoinHandle<()>>,
     task_senders: Vec<Sender<PathRequest>>,
     free_receiver: Receiver<usize>,
+    free_sender: Sender<usize>,
 }
 
 struct Worker {
@@ -159,36 +160,59 @@ impl Worker {
     }
 
     async fn serve_request(&self, request: &PathRequest) -> Result<()> {
-        let start_node = match request.get_last_node() {
+        let mut start_region = None;
+        for (region_idx, graph) in self.graphs.iter() {
+            if graph.get_node(request.last).is_some() {
+                start_region = Some(region_idx);
+            }
+        }
+        let start_region = match start_region {
+            Some(r) => {r}
             None => {
-                let node = self.graphs.get(&request.source.1).ok_or(GraphError::NodeNotFound(request.source.0, request.source.1))?.get_node(request.source.0).ok_or(GraphError::NodeNotFound(request.source.0, request.source.1))?;
-
-                let start_point = PathPoint::new(request.source.0,
-                                                 request.source.1,
-                                                 node.cord_x, node.cord_y);
-                request.update(vec![start_point], 0);
-                request.source.clone()
+                log::warn!("Received request to node {}, however this worker does not serve it's region. Request: {:?}", request.last, request);
+                Err("Not served region")?
             }
-            Some(last_node) => { last_node }
         };
-        let path_result = self.graphs.get(&start_node.1).ok_or(GraphError::NodeNotFound(start_node.0, start_node.1))?.find_way(start_node, request.target)?;
-        match path_result {
-            PathResult::TargetReached(path, cost) => {
-                let reply = request.update(path, cost);
-                log::debug!("Target reached! Sending over the result. Request id: {}, total cost: {}", request.request_id, cost);
-                self.result_reply.send(&reply).await?;
+
+        let graph = self.graphs.get(&start_region).ok_or(GraphError::StartNodeNotFound(request.last, *start_region))?;
+        let path_results: Vec<PathResult> = if request.target.1 == *start_region {
+            vec![graph.find_way_local(NodeInfo(request.last, *start_region), request.target)?]
+        } else {
+            graph.find_way(NodeInfo(request.last, *start_region), request.target)? // todo
+        };
+        let mut to_send: Vec<(usize, PathRequest)> = vec![];
+        for path_result in path_results.into_iter() {
+            match path_result {
+                PathResult::TargetReached(path, cost) => {
+                    let reply = request.update_without_region(path, request.target.0, cost);
+                    log::debug!("Target reached! Sending over the result. Request id: {}, total cost: {}", request.request_id, cost);
+                    self.result_reply.send(&reply).await?;
+                    return Ok(())
+                }
+                PathResult::Continue(path, cost, continuation) => {
+                    let next_region = match continuation {
+                        Continuation::CRegionKnown(_, region) => {region}
+                        Continuation::CRegionUnknown(node_idx) => {self.redis_connector.get_region(node_idx).await?}
+                    };
+                    if !request.visited_regions.contains(&next_region) {
+                        let new_request = request.update(path, continuation.get_node_idx(), cost, next_region);
+                        let server_id = self.redis_connector.get_server_id(next_region).await?;
+                        log::debug!("Reached region boundary. Sending over the request to server {}. Request id: {}, total cost: {}", server_id, request.request_id, cost);
+                        to_send.push((server_id, new_request));
+                    } else {
+                        log::debug!("Skipping request to {} (region has been already visited)", next_region);
+                    }
+                }
             }
-            PathResult::Continue(path, cost, next_region) => {
-                let new_request = request.update(path, cost);
-                let server_id = self.redis_connector.get_server_id(next_region).await?;
-                log::debug!("Reached region boundary. Sending over the request to server {}. Request id: {}, total cost: {}", server_id, request.request_id, cost);
-                self.node_sender_mgr.send_request(server_id, new_request).await?;
-            }
+        }
+        for (server_id, new_request) in to_send.into_iter() {
+            self.node_sender_mgr.send_request(server_id, new_request).await?;
         }
         Ok(())
     }
 
     async fn work(&self) {
+        self.free_sender.send(self.id).await.unwrap();
         loop {
             match self.task_receiver.recv().await {
                 Ok(request) => {
@@ -242,7 +266,8 @@ impl Server {
                 i,
             ).await?;
             task_senders.push(task_sender);
-            workers.push(tokio::task::spawn(async move { worker.work().await }))
+            workers.push(tokio::task::spawn(async move { worker.work().await }));
+            log::debug!("Worker spawned {}", i);
         }
         log::info!("Ready to work!");
         Ok(Server {
@@ -250,6 +275,7 @@ impl Server {
             workers,
             task_senders,
             free_receiver,
+            free_sender
         })
     }
 
@@ -262,6 +288,7 @@ impl Server {
                     continue;
                 }
             };
+            log::debug!("Got free worker {}", worker_id);
             match self.node_listener.get_new_request().await {
                 Ok(request) => {
                     log::info!("Dispatching request with id {} to worker {}", request.request_id, worker_id);
@@ -275,6 +302,7 @@ impl Server {
                             panic!("{}", err)
                         }
                         _ => {
+                            self.free_sender.send(worker_id).await.unwrap();
                             log::warn!("{}", err)
                         }
                     }

@@ -1,11 +1,13 @@
 import json, os, sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import sys
 import threading
 import urllib.parse
 
 import redis
 
-
+def eprint(*args, **kwargs):
+    print(*args, file=sys.stderr, **kwargs)
 
 class NodeId:
     def __init__(self, id: int, region_id: int):
@@ -40,12 +42,14 @@ class RequestBody:
         self.target = target
         self.path = path
         self.cost = cost
+        self.visited_regions = []
+
     
     def to_dict(self) -> dict:
         source = self.source.to_list()
         target = self.target.to_list()
         path_list = [ n.to_dict() for n in self.path ]
-        return dict(request_id=self.request_id, source=source, target=target, path=path_list, cost=self.cost)
+        return dict(request_id=self.request_id, source=source, target=target, path=path_list, cost=self.cost, visited_regions=self.visited_regions)
 
     def from_json(text: str) -> 'RequestBody':
         obj = json.loads(text)
@@ -100,6 +104,7 @@ request_counter = RequestCounter()
 class GraphFinderHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         url = urllib.parse.urlparse(self.path)
+        eprint("Got request")
         if url.path != '/':
             self.send_response(404)
             self.send_header("Content-type", "text/html")
@@ -108,7 +113,7 @@ class GraphFinderHandler(BaseHTTPRequestHandler):
 
         params = urllib.parse.parse_qs(url.query)
         if 'src' not in params or 'dst' not in params:
-            self.send_response(400)
+            self.send_response(200)
             self.send_header("Content-type", "text/html")
             self.end_headers()
             return
@@ -117,6 +122,8 @@ class GraphFinderHandler(BaseHTTPRequestHandler):
         dst_id = int(params['dst'][0])
         src_region = int(redis_handle.get(f'node_region_{src_id}'))
         dst_region = int(redis_handle.get(f'node_region_{dst_id}'))
+        src_group = int(redis_handle.get(f'region_server_{src_region}'))
+        dst_group = int(redis_handle.get(f'region_server_{dst_region}'))
 
         request_id = request_counter.next()
         srcnid = NodeId(src_id, src_region)
@@ -126,9 +133,10 @@ class GraphFinderHandler(BaseHTTPRequestHandler):
         request_json = json.dumps(request.to_dict())
 
         ch = redis_handle.pubsub()
+        eprint(f'Sending request to {src_group}')
         ch.subscribe([ f'results_{request_id}' ])
 
-        redis_handle.publish(f'node_{src_id}', request_json)
+        redis_handle.publish(f'node_{src_group}', request_json)
 
         while True:
             msg = ch.get_message(True, timeout=0.1)
@@ -147,8 +155,9 @@ class GraphFinderHandler(BaseHTTPRequestHandler):
 
 
 server = ThreadingHTTPServer((address, port), GraphFinderHandler)
-print(f'Server running on {address}:{port}')
-print(f'Redis on {redis_address}:{redis_port}')
+eprint(f'Server running on {address}:{port}')
+eprint(f'Redis on {redis_address}:{redis_port}')
+
 
 try:
     server.serve_forever()
@@ -156,4 +165,4 @@ except KeyboardInterrupt:
     pass
 
 server.server_close()
-print('Server stopped')
+eprint('Server stopped')

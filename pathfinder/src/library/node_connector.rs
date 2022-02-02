@@ -52,11 +52,11 @@ pub(crate) trait NodeListener: Sync {
 
 
 #[async_trait::async_trait]
-pub(crate) trait ResultReplier: Send + Sync {
+pub(crate) trait ResultReplier: Send + Sync + ResultReplierClone {
     async fn send(&self, reply: &PathRequest) -> BasicResult<()>;
 }
 
-trait ResultReplierClone {
+pub(crate) trait ResultReplierClone {
     fn clone_box(&self) -> Box<dyn ResultReplier>;
 }
 
@@ -68,17 +68,16 @@ impl<T: 'static + ResultReplier + Clone> ResultReplierClone for T {
 
 impl Clone for Box<dyn ResultReplier> {
     fn clone(&self) -> Box<dyn ResultReplier> {
-        self.clone()
+        self.clone_box()
     }
 }
 
 #[async_trait::async_trait]
-pub(crate) trait NodeSender: Send + Sync {
+pub(crate) trait NodeSender: Send + Sync + NodeSenderClone {
     async fn send_request(&self, target_id: usize, request: PathRequest) -> BasicResult<()>;
 }
 
-
-trait NodeSenderClone {
+pub(crate) trait NodeSenderClone {
     fn clone_box(&self) -> Box<dyn NodeSender>;
 }
 
@@ -90,7 +89,7 @@ impl<T: 'static + NodeSender + Clone> NodeSenderClone for T {
 
 impl Clone for Box<dyn NodeSender> {
     fn clone(&self) -> Box<dyn NodeSender> {
-        self.clone()
+        self.clone_box()
     }
 }
 

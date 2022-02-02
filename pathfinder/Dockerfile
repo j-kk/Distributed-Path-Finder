@@ -31,7 +31,7 @@ RUN cargo clean && \
 ####################################################################################################
 ## Final image
 ####################################################################################################
-FROM debian:bullseye
+FROM debian:bullseye-slim
 
 RUN apt update
 RUN apt install -y libssl-dev

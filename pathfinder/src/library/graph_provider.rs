@@ -14,11 +14,11 @@ struct RawNode {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct RawVertex {
+    pub(crate) id: VertexIdx,
     pub(crate) a: NodeIdx,
     pub(crate) b: NodeIdx,
     pub(crate) weight: u64,
-    pub(crate) id: VertexIdx,
-    region_bits: String, // todo implement! (or check)
+    region_bits: String,
 }
 
 impl From<RawNode> for Node {
@@ -183,7 +183,7 @@ pub mod gcloud {
                    secret_key: &str) -> Self {
             let region = Region::Custom {
                 region: region.to_owned(),
-                endpoint: "https://storage.googleapis.com".to_owned(),
+                endpoint: "http://storage.googleapis.com".to_owned(),
             };
             let bucket = Bucket::new(bucket,
                                      region,
