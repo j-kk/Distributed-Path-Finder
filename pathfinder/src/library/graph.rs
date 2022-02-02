@@ -12,20 +12,16 @@ pub type NodeIdx = usize;
 
 #[derive(Debug, Clone)]
 pub(crate) enum GraphError {
-    NodeNotFound(NodeIdx, RegionIdx),
+    StartNodeNotFound(NodeIdx, RegionIdx),
     VertexNotFound(VertexIdx, RegionIdx),
-    NoVertexWithRegionBit(NodeIdx, RegionIdx, RegionIdx),
-    MultipleVerticesWithRegionBit(NodeIdx, RegionIdx, RegionIdx, Vec<VertexIdx>),
     Unreachable(NodeIdx, RegionIdx),
 }
 
 impl std::fmt::Display for GraphError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         return match self {
-            GraphError::NodeNotFound(node_id, region_id) => { write!(f, "Node {} cannot be found in region {}", node_id, region_id) }
+            GraphError::StartNodeNotFound(node_id, region_id) => { write!(f, "Starting node {} cannot be found in region {}", node_id, region_id) }
             GraphError::VertexNotFound(vertex_id, region_id) => { write!(f, "Vertex {} cannot be found in region {}", vertex_id, region_id) }
-            GraphError::NoVertexWithRegionBit(node_id, node_region, target_region) => { write!(f, "Node {} in region {} has no vertex with set bit for region {}", node_id, node_region, target_region) }
-            GraphError::MultipleVerticesWithRegionBit(node_id, node_region, target_region, vertices) => { write!(f, "Node {} in region {} has multiple vertices with set bit for region {}, vertices {:?}", node_id, node_region, target_region, vertices) }
             GraphError::Unreachable(vertex_id, region_id) => { write!(f, "Vertex {} cannot reached in region {}", vertex_id, region_id) }
         };
     }
@@ -86,9 +82,24 @@ impl Node {
     }
 }
 
+pub(crate) enum Continuation {
+    CRegionKnown(NodeIdx, RegionIdx),
+    CRegionUnknown(NodeIdx)
+}
+
+impl Continuation {
+    pub(crate) fn get_node_idx(&self) -> NodeIdx {
+        match self {
+            Continuation::CRegionKnown(idx, _) => {*idx}
+            Continuation::CRegionUnknown(idx) => {*idx}
+        }
+    }
+}
+
+
 pub(crate) enum PathResult {
     TargetReached(Vec<PathPoint>, u64),
-    Continue(Vec<PathPoint>, u64, RegionIdx),
+    Continue(Vec<PathPoint>, u64, Continuation),
 }
 
 impl Graph {
@@ -110,13 +121,13 @@ impl Graph {
                                  target: NodeInfo) -> Result<PathResult, GraphError> {
         let mut queue: PriorityQueue<(NodeIdx, Vec<PathPoint>), i64> = PriorityQueue::new();
         let mut visited = HashSet::new();
-        let start_node = self.nodes.get(&source.0).ok_or(GraphError::NodeNotFound(source.0, self.region_idx))?;
-        queue.push((start_node.id, vec![]), 0);
+        let start_node = self.nodes.get(&source.0).ok_or(GraphError::StartNodeNotFound( source.0, self.region_idx))?;
+        queue.push((start_node.id, vec![PathPoint::from(start_node.clone())]), 0);
 
         while queue.len() > 0 {
             let ((node_idx, path), mut cost): ((NodeIdx, Vec<PathPoint>), i64) = queue.pop().unwrap();
             cost *= -1;
-            let node = self.nodes.get(&node_idx).ok_or(GraphError::NodeNotFound(node_idx, self.region_idx))?;
+            let node = self.nodes.get(&node_idx).unwrap();
             if node.id == target.0 {
                 return Ok(PathResult::TargetReached(path, cost as u64));
             }
@@ -133,7 +144,6 @@ impl Graph {
                 }
             }
         }
-
         Err(GraphError::Unreachable(target.0, target.1))
     }
 
@@ -141,14 +151,14 @@ impl Graph {
         let mut queue: PriorityQueue<(NodeIdx, Vec<PathPoint>), u64> = PriorityQueue::new();
         let mut possibilities = vec![];
         let mut visited = HashSet::new();
-        let start_node = self.nodes.get(&source.0).ok_or(GraphError::NodeNotFound(source.0, self.region_idx))?;
-        queue.push((start_node.id, vec![]), 0);
+        let start_node = self.nodes.get(&source.0).ok_or(GraphError::StartNodeNotFound(source.0, self.region_idx))?;
+        queue.push((start_node.id, vec![PathPoint::from(start_node.clone())]), 0);
 
         while queue.len() > 0 {
             let ((node_idx, path), cost): ((NodeIdx, Vec<PathPoint>), u64) = queue.pop().unwrap();
-            let node = self.nodes.get(&node_idx).ok_or(GraphError::NodeNotFound(node_idx, self.region_idx))?;
+            let node = self.nodes.get(&node_idx).unwrap();
             if self.region_idx != node.region {
-                possibilities.push(Continue(path, cost, node.region));
+                possibilities.push(Continue(path, cost, Continuation::CRegionKnown(node.id, node.region)));
                 continue;
             }
 
@@ -157,8 +167,21 @@ impl Graph {
                 if vertex.region_bits[target.1 as usize] {
                     let next = vertex.get_neighbour(node.id);
                     if !visited.contains(&next) {
-                        let next_node = self.nodes.get(&next).ok_or(GraphError::NodeNotFound(next, self.region_idx))?;
                         visited.insert(next);
+                        let next_node = match self.nodes.get(&next) {
+                            Some(node) => {
+                                if self.region_idx != node.region {
+                                    possibilities.push(Continue(path.clone(), cost, Continuation::CRegionKnown(node.id , node.region)));
+                                    continue;
+                                } else {
+                                    node
+                                }
+                            }
+                            None => {
+                                possibilities.push(Continue(path.clone(), cost + vertex.weight, Continuation::CRegionUnknown(node.id)));
+                                continue;
+                            }
+                        };
                         let mut new_path = path.clone();
                         new_path.push(PathPoint::from(next_node.clone()));
                         queue.push((next_node.id, new_path), cost + vertex.weight);

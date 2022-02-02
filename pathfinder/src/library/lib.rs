@@ -3,8 +3,8 @@ use std::env;
 use std::sync::Arc;
 use async_channel::{Receiver, Sender, unbounded};
 use tokio::task::JoinHandle;
-use crate::domain::{PathPoint, PathRequest};
-use crate::graph::{Graph, GraphError, PathResult, RegionIdx};
+use crate::domain::{NodeInfo, PathRequest};
+use crate::graph::{Continuation, Graph, GraphError, PathResult, RegionIdx};
 use crate::graph_provider::{GraphProvider, GroupInfoProvider};
 use crate::redis_connector::{RedisConnector};
 use crate::node_connector::{NodeSender, ResultReplier, ConnectionError, NodeListener};
@@ -160,36 +160,42 @@ impl Worker {
     }
 
     async fn serve_request(&self, request: &PathRequest) -> Result<()> {
-        let start_node = match request.get_last_node() {
-            None => {
-                let node = self.graphs.get(&request.source.1).ok_or(GraphError::NodeNotFound(request.source.0, request.source.1))?.get_node(request.source.0).ok_or(GraphError::NodeNotFound(request.source.0, request.source.1))?;
-
-                let start_point = PathPoint::new(request.source.0,
-                                                 request.source.1,
-                                                 node.cord_x, node.cord_y);
-                request.update(vec![start_point], 0, request.source.1);
-                request.source.clone()
+        let mut start_region = None;
+        for (region_idx, graph) in self.graphs.iter() {
+            if graph.get_node(request.last).is_some() {
+                start_region = Some(region_idx);
             }
-            Some(last_node) => { last_node }
+        }
+        let start_region = match start_region {
+            Some(r) => {r}
+            None => {
+                log::warn!("Received request to node {}, however this worker does not serve it's region. Request: {:?}", request.last, request);
+                Err("Not served region")?
+            }
         };
-        let graph = self.graphs.get(&start_node.1).ok_or(GraphError::NodeNotFound(start_node.0, start_node.1))?;
-        let path_results: Vec<PathResult> = if request.target.1 == start_node.1 {
-            vec![graph.find_way_local(start_node, request.target)?]
+
+        let graph = self.graphs.get(&start_region).ok_or(GraphError::StartNodeNotFound(request.last, *start_region))?;
+        let path_results: Vec<PathResult> = if request.target.1 == *start_region {
+            vec![graph.find_way_local(NodeInfo(request.last, *start_region), request.target)?]
         } else {
-            graph.find_way(start_node, request.target)? // todo
+            graph.find_way(NodeInfo(request.last, *start_region), request.target)? // todo
         };
         let mut to_send: Vec<(usize, PathRequest)> = vec![];
         for path_result in path_results.into_iter() {
             match path_result {
                 PathResult::TargetReached(path, cost) => {
-                    let reply = request.update_without_region(path, cost);
+                    let reply = request.update_without_region(path, request.target.0, cost);
                     log::debug!("Target reached! Sending over the result. Request id: {}, total cost: {}", request.request_id, cost);
                     self.result_reply.send(&reply).await?;
                     return Ok(())
                 }
-                PathResult::Continue(path, cost, next_region) => {
+                PathResult::Continue(path, cost, continuation) => {
+                    let next_region = match continuation {
+                        Continuation::CRegionKnown(_, region) => {region}
+                        Continuation::CRegionUnknown(node_idx) => {self.redis_connector.get_region(node_idx).await?}
+                    };
                     if !request.visited_regions.contains(&next_region) {
-                        let new_request = request.update(path, cost, next_region);
+                        let new_request = request.update(path, continuation.get_node_idx(), cost, next_region);
                         let server_id = self.redis_connector.get_server_id(next_region).await?;
                         log::debug!("Reached region boundary. Sending over the request to server {}. Request id: {}, total cost: {}", server_id, request.request_id, cost);
                         to_send.push((server_id, new_request));

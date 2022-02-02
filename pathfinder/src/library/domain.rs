@@ -51,6 +51,7 @@ pub(crate) struct PathRequest {
     pub(crate) request_id: usize,
     pub(crate) source: NodeInfo,
     pub(crate) target: NodeInfo,
+    pub(crate) last: NodeIdx,
     path: Vec<PathPoint>,
     cost: u64,
     pub(crate) visited_regions: Vec<RegionIdx>,
@@ -60,6 +61,7 @@ impl PathRequest {
     pub(crate) fn new(request_id: usize,
                       source: NodeInfo,
                       target: NodeInfo,
+                      last: NodeIdx,
                       path: Vec<PathPoint>,
                       cost: u64,
                       visited_regions: Vec<RegionIdx>) -> PathRequest {
@@ -67,6 +69,7 @@ impl PathRequest {
             request_id,
             source,
             target,
+            last,
             path,
             cost,
             visited_regions,
@@ -75,6 +78,7 @@ impl PathRequest {
 
     pub(crate) fn update_without_region(&self,
                                         mut path: Vec<PathPoint>,
+                                        last: NodeIdx,
                                         cost: u64) -> Self {
         let mut new_path = self.path.clone();
         new_path.append(&mut path);
@@ -83,6 +87,7 @@ impl PathRequest {
             self.request_id,
             self.source.clone(),
             self.target.clone(),
+            last,
             new_path,
             self.cost.clone() + cost,
             self.visited_regions.clone(),
@@ -90,6 +95,7 @@ impl PathRequest {
     }
     pub(crate) fn update(&self,
                          mut path: Vec<PathPoint>,
+                         last: NodeIdx,
                          cost: u64,
                          new_region_idx: RegionIdx) -> Self {
         let mut new_path = self.path.clone();
@@ -101,19 +107,11 @@ impl PathRequest {
             self.request_id,
             self.source.clone(),
             self.target.clone(),
+            last,
             new_path,
             self.cost.clone() + cost,
             visited_regions,
         )
-    }
-
-    pub(crate) fn get_last_node(&self) -> Option<NodeInfo> {
-        let node = if self.path.len() > 0 {
-            &self.path[self.path.len() - 1]
-        } else {
-            return None;
-        };
-        Some(NodeInfo(node.id, node.region_id))
     }
 }
 
@@ -128,6 +126,7 @@ mod test {
             request_id: 12,
             source: NodeInfo(1, 1),
             target: NodeInfo(100, 10),
+            last: 1,
             path: vec![],
             cost: 0,
             visited_regions: vec![],
