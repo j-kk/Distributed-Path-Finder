@@ -1,17 +1,13 @@
 import json, os, sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-
 import sys
-
 import threading
 import urllib.parse
 
 import redis
 
-
 def eprint(*args, **kwargs):
     print(*args, file=sys.stderr, **kwargs)
-
 
 class NodeId:
     def __init__(self, id: int, region_id: int):
@@ -47,6 +43,7 @@ class RequestBody:
         self.path = path
         self.cost = cost
         self.visited_regions = []
+
     
     def to_dict(self) -> dict:
         source = self.source.to_list()
@@ -98,8 +95,8 @@ if param_from_args:
     redis_address = sys.argv[3]
     redis_port = sys.argv[4]
 else:
-    redis_address = os.environ['REDIS_SERVICE_HOST']
-    redis_port = os.environ['REDIS_SERVICE_PORT']
+    redis_address = os.environ['REDIS_URL']
+    redis_port = os.environ['REDIS_PORT']
 
 redis_handle = redis.Redis(host=redis_address, port=redis_port)
 request_counter = RequestCounter()
@@ -160,6 +157,7 @@ class GraphFinderHandler(BaseHTTPRequestHandler):
 server = ThreadingHTTPServer((address, port), GraphFinderHandler)
 eprint(f'Server running on {address}:{port}')
 eprint(f'Redis on {redis_address}:{redis_port}')
+
 
 try:
     server.serve_forever()
